@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Convertisseur Kobo -> GeoJSON de polygones
+Convertisseur de données géospatiales -> GeoJSON de polygones
 Application Streamlit prête pour Streamlit Cloud.
+
+Accepte tout export Excel ou GeoJSON contenant des colonnes de type
+geoshape / geopoint (formulaires ODK/KoboToolbox, QGIS, ArcGIS, etc.).
 
 Déploiement :
   1. Mettre app.py et requirements.txt dans un dépôt GitHub
@@ -91,7 +94,7 @@ def identifiant(props, defaut):
 
 
 def convertir_excel(contenu_bytes):
-    """Convertit un export Excel Kobo. Retourne un dict de résultats."""
+    """Convertit un export Excel (colonnes geoshape/geopoint). Retourne un dict de résultats."""
     df = pd.read_excel(io.BytesIO(contenu_bytes))
     col_shape = detecter_colonne(df, MOTIF_GEOSHAPE, NOMS_SHAPE)
     col_point = detecter_colonne(df, MOTIF_GEOPOINT, NOMS_POINT)
@@ -200,31 +203,64 @@ def en_geojson_bytes(features, nom):
 # INTERFACE STREAMLIT
 # ----------------------------------------------------------------------------
 
+DEV_NOM = "Ibrahim Diarrassouba"
+DEV_EMAIL = "ibrahimdiarrassouba840@gmail.com"
+DEV_TEL = "+225 07 68 14 04 13"
+DEV_TEL_LIEN = "+2250768140413"
+
+
+def afficher_barre_laterale():
+    import streamlit as st
+
+    with st.sidebar:
+        st.markdown("##### :material/info: À propos de l'outil")
+        st.caption(
+            "Convertit un export **Excel** ou **GeoJSON** issu de n'importe "
+            "quel outil de collecte de terrain (ODK, KoboToolbox, QGIS, "
+            "ArcGIS…) en fichiers GeoJSON de **polygones** et de **points**, "
+            "prêts à charger dans un SIG."
+        )
+
+        st.space("small")
+        st.markdown("##### :material/person: Développeur")
+        st.write(f"**{DEV_NOM}**")
+        st.markdown(f":material/mail: [{DEV_EMAIL}](mailto:{DEV_EMAIL})")
+        st.markdown(f":material/call: [{DEV_TEL}](tel:{DEV_TEL_LIEN}) · WhatsApp")
+        st.badge("Disponible sur demande", icon=":material/check_circle:", color="green")
+        st.caption(
+            "Une question, un besoin précis ou une évolution à envisager ? "
+            "N'hésitez pas à me contacter par e-mail, appel ou WhatsApp."
+        )
+
+
 def main():
     import streamlit as st
 
-    st.set_page_config(page_title="Kobo → GeoJSON Polygones",
-                       page_icon="🌳", layout="wide")
+    st.set_page_config(page_title="Convertisseur géospatial",
+                       page_icon=":material/travel_explore:", layout="wide")
 
-    st.title("🌳 Convertisseur Kobo → GeoJSON de polygones")
+    afficher_barre_laterale()
+
+    st.title(":material/travel_explore: Convertisseur de données géospatiales")
     st.markdown(
-        "Déposez votre **export Excel KoboToolbox** (recommandé) ou un fichier "
-        "**GeoJSON** : l'application produit un fichier contenant **uniquement "
-        "les polygones de parcelles**, prêt à charger dans votre système, et "
-        "signale les enquêtes incomplètes."
+        "Déposez un **export Excel** (formulaire ODK/KoboToolbox ou tout "
+        "tableur avec des colonnes de tracé GPS) ou un fichier **GeoJSON** : "
+        "l'application isole les **polygones de parcelles**, prêts à charger "
+        "dans votre système, et signale les enquêtes incomplètes."
     )
 
     fichier = st.file_uploader(
         "Déposer le fichier ici",
         type=["xlsx", "xls", "geojson", "json"],
-        help="Export Excel Kobo (labels) ou export GeoJSON",
+        help="Export Excel (colonnes geoshape/geopoint) ou export GeoJSON",
     )
 
     if fichier is None:
         st.info(
-            "💡 **Conseil** : préférez l'export **Excel** de Kobo. L'export "
-            "GeoJSON de Kobo peut perdre des polygones en route, alors que "
-            "l'Excel contient toujours tous les tracés."
+            "**Conseil** : préférez l'export **Excel**. Certains outils de "
+            "collecte perdent des polygones lors de l'export direct en "
+            "GeoJSON, alors que l'Excel contient toujours tous les tracés.",
+            icon=":material/lightbulb:",
         )
         return
 
@@ -236,11 +272,11 @@ def main():
             else:
                 res = convertir_geojson(contenu)
     except Exception as e:
-        st.error(f"Impossible de lire ce fichier : {e}")
+        st.error(f"Impossible de lire ce fichier : {e}", icon=":material/error:")
         return
 
     if res.get("erreur"):
-        st.error(res["erreur"])
+        st.error(res["erreur"], icon=":material/error:")
         return
 
     # --- Résumé -------------------------------------------------------------
@@ -257,50 +293,53 @@ def main():
                    + (f" · Colonne point : « {res['col_point']} »" if res.get("col_point") else ""))
 
     if not res["polygones"]:
-        st.error("Aucun polygone valide trouvé dans ce fichier.")
+        st.error("Aucun polygone valide trouvé dans ce fichier.", icon=":material/error:")
         return
 
     if res["sans_trace"]:
         st.warning(
-            f"⚠️ **{len(res['sans_trace'])} enquête(s) sans tracé de parcelle** — "
-            "elles ne figureront pas dans le fichier de polygones. Les agents "
-            "doivent retourner tracer ces parcelles :"
+            f"**{len(res['sans_trace'])} enquête(s) sans tracé de parcelle** — "
+            "elles ne figureront pas dans le fichier de polygones. Les équipes "
+            "de terrain doivent retourner tracer ces parcelles :",
+            icon=":material/warning:",
         )
         st.table(pd.DataFrame(res["sans_trace"]))
 
     if res["anomalies"]:
-        with st.expander(f"⚠️ Avertissements ({len(res['anomalies'])})"):
+        with st.expander(f"Avertissements ({len(res['anomalies'])})", icon=":material/error:"):
             for a in res["anomalies"]:
                 st.write("• " + a)
 
     # --- Téléchargements ----------------------------------------------------
-    st.subheader("📥 Téléchargements")
+    st.subheader(":material/download: Téléchargements")
     base = fichier.name.rsplit(".", 1)[0]
     col_a, col_b = st.columns(2)
     with col_a:
         st.download_button(
-            f"⬇️ Fichier POLYGONES ({len(res['polygones'])}) — à charger dans le système",
+            f"Fichier polygones ({len(res['polygones'])}) — à charger dans le système",
             data=en_geojson_bytes(res["polygones"], base + "_polygones"),
             file_name=base + "_POLYGONES.geojson",
             mime="application/geo+json",
             type="primary",
-            use_container_width=True,
+            icon=":material/download:",
+            width="stretch",
         )
     with col_b:
         if res["points"]:
             st.download_button(
-                f"⬇️ Fichier POINTS ({len(res['points'])}) — pour vérification / QGIS",
+                f"Fichier points ({len(res['points'])}) — pour vérification / QGIS",
                 data=en_geojson_bytes(res["points"], base + "_points"),
                 file_name=base + "_POINTS.geojson",
                 mime="application/geo+json",
-                use_container_width=True,
+                icon=":material/download:",
+                width="stretch",
             )
 
     # --- Tableau récapitulatif ----------------------------------------------
     if res["tableau"]:
-        st.subheader("📋 Récapitulatif des parcelles")
+        st.subheader(":material/table_chart: Récapitulatif des parcelles")
         tab = pd.DataFrame(res["tableau"])
-        st.dataframe(tab, use_container_width=True, height=350)
+        st.dataframe(tab, width="stretch", height=350)
         surfaces = tab["Surface GPS (ha)"].dropna()
         if len(surfaces):
             st.caption(
@@ -310,7 +349,7 @@ def main():
             )
 
     # --- Carte --------------------------------------------------------------
-    st.subheader("🗺️ Aperçu des parcelles")
+    st.subheader(":material/map: Aperçu des parcelles")
     try:
         import pydeck as pdk
 
