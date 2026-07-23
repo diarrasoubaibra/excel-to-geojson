@@ -1,2 +1,24 @@
+# Environnements virtuels
 env/
+.venv/
+venv/
+
+# Secrets et config locale
 .env
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+
+# Fichiers de données déposés/testés en local (peuvent contenir des données
+# personnelles issues d'enquêtes terrain) — pas du code, ne pas versionner.
+# Pour en tracker un explicitement malgré tout : git add -f <fichier>
+*.xlsx
+*.xls
+*.csv
+*.geojson
+
+# Système
+.DS_Store
+Thumbs.db

@@ -34,17 +34,25 @@ NOMS_SHAPE = ["délimitation", "delimitation", "tracé", "trace", "contour",
 NOMS_POINT = ["waypoint", "point gps", "geopoint", "localisation", "position",
               "coordonnées", "coordonnees"]
 
+# Certains outils de collecte (ex. KoboToolbox) insèrent ce marqueur quand une
+# cellule de tracé GPS dépasse la limite Excel de 32 767 caractères par cellule.
+MOTIF_WARNING = re.compile(r"<WARNING:[^>]*>", re.IGNORECASE)
+LIMITE_EXCEL = 32767
+
 
 def detecter_colonne(df, motif, noms_probables):
+    def nettoyer(v):
+        return MOTIF_WARNING.sub("", v).strip()
+
     for nom in noms_probables:
         for col in df.columns:
             if nom.lower() in str(col).lower():
-                serie = df[col].dropna().astype(str)
+                serie = df[col].dropna().astype(str).apply(nettoyer)
                 if len(serie) and serie.head(20).apply(
                         lambda v: bool(motif.match(v))).mean() > 0.5:
                     return col
     for col in df.columns:
-        serie = df[col].dropna().astype(str)
+        serie = df[col].dropna().astype(str).apply(nettoyer)
         if len(serie) >= 3 and serie.head(20).apply(
                 lambda v: bool(motif.match(v))).mean() > 0.8:
             return col
@@ -52,15 +60,26 @@ def detecter_colonne(df, motif, noms_probables):
 
 
 def parser_anneau(texte):
+    """Parse un tracé GPS en ignorant les sommets illisibles (avertissement
+    du collecteur, dernier sommet coupé par une troncature de cellule…)."""
     anneau = []
-    for morceau in str(texte).strip().split(";"):
+    for morceau in MOTIF_WARNING.sub("", str(texte)).strip().split(";"):
         valeurs = morceau.split()
         if len(valeurs) >= 2:
-            lat, lon = float(valeurs[0]), float(valeurs[1])
+            try:
+                lat, lon = float(valeurs[0]), float(valeurs[1])
+            except ValueError:
+                continue
             anneau.append([lon, lat])
     if anneau and anneau[0] != anneau[-1]:
         anneau.append(list(anneau[0]))
     return anneau
+
+
+def est_tronque(texte):
+    """Vrai si la cellule a été tronquée par la limite Excel de 32 767 caractères."""
+    t = str(texte)
+    return bool(MOTIF_WARNING.search(t)) or len(t) >= LIMITE_EXCEL
 
 
 def surface_ha(anneau):
@@ -93,9 +112,23 @@ def identifiant(props, defaut):
     return props.get("_uuid") or defaut
 
 
-def convertir_excel(contenu_bytes):
-    """Convertit un export Excel (colonnes geoshape/geopoint). Retourne un dict de résultats."""
-    df = pd.read_excel(io.BytesIO(contenu_bytes))
+def lire_tableau(contenu_bytes, nom_fichier):
+    """Lit un export tabulaire au format Excel ou CSV."""
+    if nom_fichier.lower().endswith(".csv"):
+        for sep in (";", ",", "\t"):
+            try:
+                df = pd.read_csv(io.BytesIO(contenu_bytes), sep=sep, dtype=str)
+                if len(df.columns) > 3:
+                    return df
+            except Exception:
+                continue
+        return pd.read_csv(io.BytesIO(contenu_bytes), dtype=str)
+    return pd.read_excel(io.BytesIO(contenu_bytes))
+
+
+def convertir_excel(contenu_bytes, nom_fichier="export.xlsx"):
+    """Convertit un export Excel/CSV (colonnes geoshape/geopoint). Retourne un dict de résultats."""
+    df = lire_tableau(contenu_bytes, nom_fichier)
     col_shape = detecter_colonne(df, MOTIF_GEOSHAPE, NOMS_SHAPE)
     col_point = detecter_colonne(df, MOTIF_GEOPOINT, NOMS_POINT)
 
@@ -122,12 +155,22 @@ def convertir_excel(contenu_bytes):
             statut = "SANS TRACÉ"
         else:
             anneau = parser_anneau(brut)
+            tronque = est_tronque(brut)
             if len(anneau) < 4:
-                res["anomalies"].append(f"{ident} : tracé avec moins de 3 sommets, ignoré")
+                res["anomalies"].append(f"{ident} : tracé illisible ou avec moins de 3 "
+                                        "sommets exploitables, ignoré")
                 statut = "TRACÉ INVALIDE"
             else:
                 aire = surface_ha(anneau)
-                if aire < 0.01:
+                if tronque:
+                    statut = "TRONQUÉ"
+                    res["anomalies"].append(
+                        f"{ident} ({village}) : tracé TRONQUÉ par la limite Excel de "
+                        "32 767 caractères par cellule — le polygone est incomplet "
+                        f"({aire:.2f} ha reconstruits seulement). Pour récupérer le "
+                        "tracé complet, réexportez les données au format CSV (sans "
+                        "cette limite) et déposez ce fichier ici.")
+                elif aire < 0.01:
                     res["anomalies"].append(
                         f"{ident} : polygone minuscule ({aire * 10000:.0f} m²), à vérifier")
                     statut = "MINUSCULE"
@@ -215,10 +258,10 @@ def afficher_barre_laterale():
     with st.sidebar:
         st.markdown("##### :material/info: À propos de l'outil")
         st.caption(
-            "Convertit un export **Excel** ou **GeoJSON** issu de n'importe "
-            "quel outil de collecte de terrain (ODK, KoboToolbox, QGIS, "
-            "ArcGIS…) en fichiers GeoJSON de **polygones** et de **points**, "
-            "prêts à charger dans un SIG."
+            "Convertit un export **Excel**, **CSV** ou **GeoJSON** issu de "
+            "n'importe quel outil de collecte de terrain (ODK, KoboToolbox, "
+            "QGIS, ArcGIS…) en fichiers GeoJSON de **polygones** et de "
+            "**points**, prêts à charger dans un SIG."
         )
 
         st.space("small")
@@ -243,23 +286,26 @@ def main():
 
     st.title(":material/travel_explore: Convertisseur de données géospatiales")
     st.markdown(
-        "Déposez un **export Excel** (formulaire ODK/KoboToolbox ou tout "
-        "tableur avec des colonnes de tracé GPS) ou un fichier **GeoJSON** : "
-        "l'application isole les **polygones de parcelles**, prêts à charger "
-        "dans votre système, et signale les enquêtes incomplètes."
+        "Déposez un **export Excel ou CSV** (formulaire ODK/KoboToolbox ou "
+        "tout tableur avec des colonnes de tracé GPS) ou un fichier "
+        "**GeoJSON** : l'application isole les **polygones de parcelles**, "
+        "prêts à charger dans votre système, et signale les enquêtes "
+        "incomplètes."
     )
 
     fichier = st.file_uploader(
         "Déposer le fichier ici",
-        type=["xlsx", "xls", "geojson", "json"],
-        help="Export Excel (colonnes geoshape/geopoint) ou export GeoJSON",
+        type=["xlsx", "xls", "csv", "geojson", "json"],
+        help="Export Excel ou CSV (colonnes geoshape/geopoint), ou export GeoJSON",
     )
 
     if fichier is None:
         st.info(
-            "**Conseil** : préférez l'export **Excel**. Certains outils de "
-            "collecte perdent des polygones lors de l'export direct en "
-            "GeoJSON, alors que l'Excel contient toujours tous les tracés.",
+            "**Conseil** : préférez l'export **CSV** si votre outil de "
+            "collecte le propose : contrairement à l'Excel, il n'a pas de "
+            "limite de caractères par cellule et récupère donc les tracés "
+            "les plus complexes (parcelles avec de nombreux sommets). "
+            "L'export GeoJSON, lui, peut perdre des polygones en route.",
             icon=":material/lightbulb:",
         )
         return
@@ -267,8 +313,8 @@ def main():
     contenu = fichier.read()
     try:
         with st.spinner("Analyse du fichier en cours…"):
-            if fichier.name.lower().endswith((".xlsx", ".xls")):
-                res = convertir_excel(contenu)
+            if fichier.name.lower().endswith((".xlsx", ".xls", ".csv")):
+                res = convertir_excel(contenu, fichier.name)
             else:
                 res = convertir_geojson(contenu)
     except Exception as e:
